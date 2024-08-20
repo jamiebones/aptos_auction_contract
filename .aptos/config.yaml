@@ -1,0 +1,9 @@
+---
+profiles:
+  jamiebones:
+    network: Devnet
+    private_key: "0x9fd56da40c5d0dd02c114491c890cee09274b8b4fb24244b38b3a183cb8fce95"
+    public_key: "0xb99ddca1e209819cd3b812b6a2da5b337fdf8813afe266478255a14d3267f513"
+    account: eead0f8c4cb00403a03862bf8b0b022ab747a5e5a1ece114791dc7867705aaad
+    rest_url: "https://fullnode.devnet.aptoslabs.com"
+    faucet_url: "https://faucet.devnet.aptoslabs.com"

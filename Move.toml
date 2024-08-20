@@ -1,0 +1,16 @@
+[package]
+name = "auction-contract"
+version = "1.0.0"
+authors = ["James Oshomah<jamiebones2000@yahoo.co.uk>"]
+
+[addresses]
+auction = "_"
+[dev-addresses]
+auction = "0x0147"
+
+[dependencies]
+AptosFramework = {git = "https://github.com/aptos-labs/aptos-core.git", rev = "mainnet", subdir = "aptos-move/framework/aptos-framework"}
+AptosTokenObjects = {git = "https://github.com/aptos-labs/aptos-core.git", rev = "mainnet", subdir = "aptos-move/framework/aptos-token-objects"}
+
+
+[dev-dependencies]
