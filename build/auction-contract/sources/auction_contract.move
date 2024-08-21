@@ -33,6 +33,7 @@ module auction::auction_contract {
     const ERR_BID_SMALLER_THAN_HIGHEST_BID:u64 = 705;
     const ERR_AUCTION_TIME_LAPSED:u64 = 706;
     const ERR_AUCTION_ENDED:u64 = 707;
+    const ERR_AUCTION_TIME_NOT_LAPSED:u64 = 708;
 
 
     //event
@@ -73,6 +74,7 @@ module auction::auction_contract {
         auction_objects: vector<Object<AuctionMetadata>>,
     }
 
+
     // //#[resource_group_member(group = aptos_framework::object::ObjectGroup)]
     // struct ContractWallet has key {
     //     //owner_ref: Object<Object>,
@@ -82,6 +84,7 @@ module auction::auction_contract {
         auction_address: address,
         bid_amount: u64
     }
+
 
     #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
     struct UserAuctionBid has key {
@@ -94,13 +97,9 @@ module auction::auction_contract {
     }
 
     fun create_contract_resource(creator: &signer){
-        //create an object that will hold the contract funds
-        let creator_address = signer::address_of(creator);
-        let (resource_account_signer, signer_capability) = account::create_resource_account(creator, WALLET_SEED);
-        let constructor_ref = object::create_named_object(&resource_account_signer, WALLET_SEED);
-        //let obj_signer = object::generate_signer(&constructor_ref);
+        //create a resource account to hold the contract funds
+        let (_, signer_capability) = account::create_resource_account(creator, WALLET_SEED);
         move_to(creator, SignerCapabilityStore { signer_capability });
-        //
         move_to(
             creator,
             Registry {
@@ -160,9 +159,11 @@ module auction::auction_contract {
     }
 
 
-    public entry fun make_auction_bid(bidder: &signer, auction_object: Object<AuctionMetadata>, bid_amount: u64) acquires AuctionMetadata, UserAuctionBid {
+    public entry fun make_auction_bid(bidder: &signer, auction_object: Object<AuctionMetadata>, bid_amount: u64) acquires AuctionMetadata, UserAuctionBid,SignerCapabilityStore {
         //get the auction object and check if it exists
         let auction_address = object::object_address(&auction_object);
+        let resource_account_signer = &get_signer();
+        let resource_account_address = signer::address_of(resource_account_signer);
         if (!object::object_exists<AuctionMetadata>(auction_address)) {
            abort(ERR_OBJECT_DONT_EXIST)
         };
@@ -186,7 +187,6 @@ module auction::auction_contract {
         auction.highest_bid = option::some(bid_amount);
         let bidder_address = signer::address_of(bidder);
         auction.highest_bidder = option::some(bidder_address);
-        let wallet_obj_address = get_object_address();
         let sm_table_returns = &mut auction.pending_returns;
         //check if the address is on the smart table
         let added_bid_amount = 0;
@@ -207,12 +207,10 @@ module auction::auction_contract {
         smart_table::upsert(&mut auction.bidders, bidder_address, bid_amount);
         smart_table::upsert(sm_table_returns, bidder_address, bid_amount);
         if ( added_bid_amount > 0 ){
-            aptos_account::transfer(bidder, wallet_obj_address, added_bid_amount);
+            aptos_account::transfer(bidder, resource_account_address, added_bid_amount);
         } else {
-            aptos_account::transfer(bidder, wallet_obj_address, bid_amount);
+            aptos_account::transfer(bidder, resource_account_address, bid_amount);
         };
-
-
 
         //save the user bid made to the UserAuctionBid state
         if (exists<UserAuctionBid>(bidder_address)){
@@ -238,14 +236,48 @@ module auction::auction_contract {
         }
     }
 
-    fun get_signer(creator: address): signer acquires SignerCapabilityStore {
-        let signer_capability = &borrow_global<SignerCapabilityStore>(creator).signer_capability;
-        account::create_signer_with_capability(signer_capability)
+    //close_auction
+    public entry fun close_auction(caller: &signer, auction_object: Object<AuctionMetadata>) acquires AuctionMetadata, SignerCapabilityStore
+    {
+        //get the auction
+        let auction_address = object::object_address(&auction_object);
+        if (!object::object_exists<AuctionMetadata>(auction_address)) {
+            abort(ERR_OBJECT_DONT_EXIST)
+        };
+        let auction = borrow_global_mut<AuctionMetadata>(auction_address);
+        if ( timestamp::now_seconds() < auction.auction_end_time ){
+            abort(ERR_AUCTION_TIME_NOT_LAPSED)
+        };
+        if ( auction.auction_ended ){
+            abort(ERR_AUCTION_ENDED)
+        };
+        //end the auction
+        auction.auction_ended = true;
+        //return the bidders money that didn't win back
+        let highest_bidder = option::borrow(&auction.highest_bidder);
+        refund_money_back_to_non_win_bids(&auction.bidders, *highest_bidder);
+    }
+
+
+    fun refund_money_back_to_non_win_bids(bidders: &SmartTable<address, u64>, bid_winner: address) acquires SignerCapabilityStore {
+        //loop through the smart table
+        //retrieve the signer for the wallet object
+        let resource_account_signer = &get_signer();
+        let resource_account_address = signer::address_of(resource_account_signer);
+        smart_table::for_each_ref(bidders, |key, value| {
+            if ( *key != bid_winner){
+                let d = coin::balance<AptosCoin>(resource_account_address);
+                debug::print(&d);
+
+                coin::transfer<AptosCoin>(resource_account_signer, *key, *value);
+            }
+        })
     }
 
     #[view]
-    public fun get_object_address(): address {
-        object::create_object_address(&@auction, WALLET_SEED)
+    fun get_signer(): signer acquires SignerCapabilityStore {
+        let signer_capability = &borrow_global<SignerCapabilityStore>(@auction).signer_capability;
+        account::create_signer_with_capability(signer_capability)
     }
 
 
@@ -308,7 +340,7 @@ module auction::auction_contract {
         owner_2 = @0x125,
         aptos_framework = @0x1, )]
     fun test_auction_bid(creator: &signer, owner_1: &signer, owner_2: &signer, aptos_framework: &signer) acquires OwnerAuctions, Registry,
-     AuctionMetadata, UserAuctionBid {
+     AuctionMetadata, UserAuctionBid, SignerCapabilityStore {
         setup_test(creator, owner_1, owner_2, aptos_framework);
         test_mint_aptos(creator, owner_1, owner_2);
         let auction_brief_description = string::utf8(b"Selling the voucher drapper");
@@ -322,16 +354,14 @@ module auction::auction_contract {
         //get the created auction object
         let auction_vector_ref = borrow_global<Registry>(@auction).auction_objects;
         let auction_ref = vector::borrow(&auction_vector_ref, 0);
-        // let auction_address = object::object_address(auction_ref);
-        // let auction: Object<AuctionMetadata> = object::address_to_object<AuctionMetadata>(auction_address);
+        let resource_account_signer = &get_signer();
+        let resource_account_address = signer::address_of(resource_account_signer);
         make_auction_bid(owner_1, *auction_ref, 10_00000000);
         //get the balance of the conctract
-
         make_auction_bid(owner_1, *auction_ref, 12_00000000);
         make_auction_bid(owner_2, *auction_ref, 20_00000000);
         //test the bid
-        let contract_address = get_object_address();
-        let contract_balance = coin::balance<AptosCoin>(contract_address);
+        let contract_balance = coin::balance<AptosCoin>(resource_account_address);
         //check the Registry length
         let num_vector = borrow_global<Registry>(@auction).auction_objects;
         let auction_object_reference = vector::borrow(&num_vector, 0);
@@ -342,8 +372,43 @@ module auction::auction_contract {
         assert!(exists<UserAuctionBid>(signer::address_of(owner_1)), 901);
         assert!(smart_table::length(&auction.bidders) == 2 , 902);
         assert!(*bidder_one_bid == 12_00000000, 903);
+    }
+
+    #[test(creator = @auction, owner_1 = @0x124,
+        owner_2 = @0x125,
+        aptos_framework = @0x1, )]
+    fun test_end_auction_bid(creator: &signer, owner_1: &signer, owner_2: &signer, aptos_framework: &signer) acquires OwnerAuctions, Registry,
+    AuctionMetadata, UserAuctionBid, SignerCapabilityStore {
+        setup_test(creator, owner_1, owner_2, aptos_framework);
+        test_mint_aptos(creator, owner_1, owner_2);
+        let auction_brief_description = string::utf8(b"Selling the voucher drapper");
+        let auction_description_url = string::utf8(b"https//space.com");
+
+        create_new_auction(
+            creator,
+            auction_brief_description,
+            auction_description_url,
+            1724361612
+        );
+        //get the created auction object
+
+        let auction_vector_ref = borrow_global<Registry>(@auction).auction_objects;
+        let auction_ref = vector::borrow(&auction_vector_ref, 0);
+        let owner1_bal_before = coin::balance<AptosCoin>(signer::address_of(owner_1));
+        let owner2_bal_before = coin::balance<AptosCoin>(signer::address_of(owner_2));
+        make_auction_bid(owner_1, *auction_ref, 10_00000000);
+        //get the balance of the conctract
+        make_auction_bid(owner_2, *auction_ref, 20_00000000);
+        timestamp::fast_forward_seconds(1727040012);
+
+        close_auction(creator, *auction_ref);
+        let owner1_bal_after = coin::balance<AptosCoin>(signer::address_of(owner_1));
+        let owner2_bal_after = coin::balance<AptosCoin>(signer::address_of(owner_2));
+        assert!(owner1_bal_after == owner1_bal_before, 908);
+        assert!(owner2_bal_after < owner2_bal_before, 909);
 
     }
+
 
 
 }
