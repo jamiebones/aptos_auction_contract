@@ -34,6 +34,8 @@ module auction::auction_contract {
     const ERR_AUCTION_TIME_LAPSED:u64 = 706;
     const ERR_AUCTION_ENDED:u64 = 707;
     const ERR_AUCTION_TIME_NOT_LAPSED:u64 = 708;
+    const ERR_AUCTION_STILL_RUNNING:u64 = 709;
+    const ERR_NOT_THE_OWNER:u64 = 710;
 
 
     //event
@@ -237,7 +239,7 @@ module auction::auction_contract {
     }
 
     //close_auction
-    public entry fun close_auction(caller: &signer, auction_object: Object<AuctionMetadata>) acquires AuctionMetadata, SignerCapabilityStore
+    public entry fun close_auction(auction_object: Object<AuctionMetadata>) acquires AuctionMetadata, SignerCapabilityStore
     {
         //get the auction
         let auction_address = object::object_address(&auction_object);
@@ -258,6 +260,24 @@ module auction::auction_contract {
         refund_money_back_to_non_win_bids(&auction.bidders, *highest_bidder);
     }
 
+    public entry fun collect_winning_bid(auction_owner: &signer, auction_object: Object<AuctionMetadata>) acquires AuctionMetadata, SignerCapabilityStore{
+        let auction_address = object::object_address(&auction_object);
+        let resource_account_signer = &get_signer();
+        let resource_account_address = signer::address_of(resource_account_signer);
+        if (!object::object_exists<AuctionMetadata>(auction_address)) {
+            abort(ERR_OBJECT_DONT_EXIST)
+        };
+        let auction = borrow_global<AuctionMetadata>(auction_address);
+        if ( !auction.auction_ended ){
+            abort(ERR_AUCTION_STILL_RUNNING)
+        };
+        assert!(auction.owner == signer::address_of(auction_owner), ERR_NOT_THE_OWNER);
+        //collect the highest bid
+        coin::transfer<AptosCoin>(resource_account_signer, auction.owner, *option::borrow(&auction.highest_bid))
+    }
+
+
+
 
     fun refund_money_back_to_non_win_bids(bidders: &SmartTable<address, u64>, bid_winner: address) acquires SignerCapabilityStore {
         //loop through the smart table
@@ -266,9 +286,6 @@ module auction::auction_contract {
         let resource_account_address = signer::address_of(resource_account_signer);
         smart_table::for_each_ref(bidders, |key, value| {
             if ( *key != bid_winner){
-                let d = coin::balance<AptosCoin>(resource_account_address);
-                debug::print(&d);
-
                 coin::transfer<AptosCoin>(resource_account_signer, *key, *value);
             }
         })
@@ -401,13 +418,41 @@ module auction::auction_contract {
         make_auction_bid(owner_2, *auction_ref, 20_00000000);
         timestamp::fast_forward_seconds(1727040012);
 
-        close_auction(creator, *auction_ref);
+        close_auction(*auction_ref);
         let owner1_bal_after = coin::balance<AptosCoin>(signer::address_of(owner_1));
         let owner2_bal_after = coin::balance<AptosCoin>(signer::address_of(owner_2));
         assert!(owner1_bal_after == owner1_bal_before, 908);
         assert!(owner2_bal_after < owner2_bal_before, 909);
     }
 
+    #[test(creator = @auction, owner_1 = @0x124,
+        owner_2 = @0x125,
+        aptos_framework = @0x1, )]
+    fun test_winning_bid_collection(creator: &signer, owner_1: &signer, owner_2: &signer, aptos_framework: &signer) acquires OwnerAuctions, Registry,
+    AuctionMetadata, UserAuctionBid, SignerCapabilityStore {
+        setup_test(creator, owner_1, owner_2, aptos_framework);
+        test_mint_aptos(creator, owner_1, owner_2);
+        let auction_brief_description = string::utf8(b"Selling the voucher drapper");
+        let auction_description_url = string::utf8(b"https//space.com");
+        create_new_auction(
+            creator,
+            auction_brief_description,
+            auction_description_url,
+            1724361612
+        );
+        //get the created auction object
+        let auction_vector_ref = borrow_global<Registry>(@auction).auction_objects;
+        let auction_ref = vector::borrow(&auction_vector_ref, 0);
+        let creator_bal_before = coin::balance<AptosCoin>(signer::address_of(creator));
+        make_auction_bid(owner_1, *auction_ref, 10_00000000);
+        make_auction_bid(owner_2, *auction_ref, 20_00000000);
+        timestamp::fast_forward_seconds(1727040012);
+
+        close_auction(*auction_ref);
+        collect_winning_bid(creator, *auction_ref);
+        let creator_bal_after = coin::balance<AptosCoin>(signer::address_of(creator));
+        assert!(creator_bal_after > creator_bal_before, 909);
+    }
 
 
 }
